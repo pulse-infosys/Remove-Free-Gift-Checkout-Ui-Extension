@@ -136,7 +136,9 @@ function Extension() {
   const currency = useCurrency();
   const storage = useStorage();
   const processingRef = useRef(false);
+  const processingFreeGiftRef = useRef(false);
 
+ // FIRST LOGIC - Original threshold-based free gift management
   useEffect(() => {
     async function manageFreeGifts() {
       if (processingRef.current || !cartLines) return;
@@ -198,11 +200,6 @@ function Extension() {
             ],
           });
 
-          // if (result.type === "error") {
-          //       console.error("Error re-adding free gift:", result.message);
-          //     } else {
-          //       console.log("✅ Re-added:", item.title);
-          //     }
         }
         // Always clear storage after attempting to re-add
         await storage.delete("removedFreeGifts");
@@ -212,6 +209,91 @@ function Extension() {
 
     manageFreeGifts();
   }, [cartLines, totalAmount, currency, applyCartLinesChange, storage]);
+
+  // SECOND LOGIC - Independent free gift product validation
+  useEffect(() => {
+    async function validateFreeGiftProducts() {
+      if (processingFreeGiftRef.current || !cartLines) return;
+      processingFreeGiftRef.current = true;
+
+      try {
+        // Find all products with _free_gift_product property
+        const freeGiftProducts = cartLines.filter((line) =>
+          line.attributes?.some(
+            (attr) => attr.key === "_free_gift_product" && attr.value === "true"
+          )
+        );
+
+        // console.log('freeGiftProducts====',freeGiftProducts);
+
+        // If no free gift products, nothing to validate
+        if (freeGiftProducts.length === 0) {
+          processingFreeGiftRef.current = false;
+          return;
+        }
+
+        // Get all product IDs in cart (excluding free gift products)
+        const mainProductIds = new Set(
+          cartLines
+            .filter((line) => 
+              !line.attributes?.some(
+                (attr) => attr.key === "_free_gift_product" && attr.value === "true"
+              )
+            )
+            .map((line) => {
+              // Extract product ID from variant ID
+              // Format: gid://shopify/ProductVariant/123456
+              const variantId = line.merchandise?.id;
+              // console.log('variantId====',variantId);
+              if (!variantId) return null;
+              
+              // Try to get product ID from variant
+              const productId = line.merchandise?.product?.id;
+              // console.log('productId====',productId);
+
+              if (productId) {
+                // Extract numeric ID from gid
+                const match = productId.match(/\d+$/);
+                return match ? match[0] : null;
+              }
+              return null;
+            })
+            .filter(Boolean)
+        );
+
+        // Check each free gift product
+        for (const freeGiftLine of freeGiftProducts) {
+          // Find __main_product_id attribute
+          const mainProductIdAttr = freeGiftLine.attributes?.find(
+            (attr) => attr.key === "__main_product_id"
+          );
+
+          // If both properties exist, validate
+          if (mainProductIdAttr && mainProductIdAttr.value) {
+            const requiredMainProductId = mainProductIdAttr.value;
+              // console.log('requiredMainProductId====',requiredMainProductId);
+
+
+            // Check if the main product is in cart
+            if (!mainProductIds.has(requiredMainProductId)) {
+              // Main product not found, remove this free gift
+              await applyCartLinesChange({
+                type: "removeCartLine",
+                id: freeGiftLine.id,
+                quantity: freeGiftLine.quantity,
+              });
+            }
+          }
+        }
+      } catch (error) {
+        console.error("Error validating free gift products:", error);
+      }
+
+      processingFreeGiftRef.current = false;
+    }
+
+    validateFreeGiftProducts();
+  }, [cartLines, applyCartLinesChange]);
 
   return null;
 }
